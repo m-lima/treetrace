@@ -3,14 +3,23 @@ use crate::output::Output;
 /// A [`Layer`](tracing_subscriber::Layer) implementation that displays all spans that own an event
 /// when it occurs.
 ///
-/// Can be built using [`Builder`](crate::builder::Builder).
+/// When an event is printed, all the spans are printed. By default, if a new event occurs inside
+/// the same span, just the event is printed. Otherwise, only the divergent part of the span
+/// hierarchy will be printed.
+///
+/// Spans are normally not printed unless an event occurs within them. This behavior can be
+/// changed so that they are always printed when entered by setting
+/// `log_spans` in [`Layer::new`].
+///
+/// Fields of spans and events are printed inline, so that each line is a log entry. However,
+/// setting `multiline` in [`Layer::new`] prints each field in a separate line.
 ///
 /// # Examples
 ///
 /// ```
-/// # use treetrace::{builder::Builder, output::Stdout};
+/// # use treetrace::{layer::Layer, output::Stdout};
 /// # use tracing_subscriber::layer::SubscriberExt;
-/// let layer = Builder::new(Stdout).build();
+/// let layer = Layer::new(Stdout, false, false);
 /// let subscriber = tracing_subscriber::registry().with(layer);
 /// tracing::subscriber::set_global_default(subscriber).unwrap();
 /// ```
