@@ -4,9 +4,8 @@ on:
     tags:
       - v*
 env:
-  CRATE_NAME: crypter
+  CRATE_NAME: treetrace
   CHECK_README: true
-  CHECK_BINDGEN: ffi/include/crypter.h
   RUSTFLAGS: "-Dwarnings"
 jobs:
   version:
@@ -19,6 +18,7 @@ jobs:
         run: |
           version=`cargo metadata --format-version 1 | jq -r '.packages[] | select(.name == "${{ env.CRATE_NAME }}") | .version'`
           version=v"${version}"
+          echo "Got '${version}' from Cargo.toml"
           [ "${version}" ] && [ "${version}" == "${{ github.ref_name }}" ]
   check:
     name: Check
