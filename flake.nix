@@ -36,7 +36,7 @@
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
 
-        rust_template = craneLib.buildPackage (
+        treetrace = craneLib.buildPackage (
           commonArgs
           // {
             inherit cargoArtifacts;
@@ -65,7 +65,7 @@
       in
       {
         checks = {
-          inherit rust_template;
+          inherit treetrace;
 
           hackCheck = hack {
             args = "check";
@@ -93,10 +93,9 @@
           };
         };
 
-        packages.default = rust_template;
-
-        apps.default = flake-utils.lib.mkApp {
-          drv = rust_template;
+        packages = {
+          inherit treetrace;
+          default = treetrace;
         };
 
         devShells.default = craneLib.devShell {
@@ -151,12 +150,15 @@
           (treefmt-nix.lib.evalModule pkgs {
             projectRootFile = "Cargo.toml";
             programs = {
+              mdformat.enable = true;
               nixfmt.enable = true;
               rustfmt.enable = true;
               taplo.enable = true;
+              yamlfmt.enable = true;
             };
             settings = {
               excludes = [
+                "LICENSE"
                 "*.lock"
                 ".direnv/*"
                 ".envrc"
@@ -164,6 +166,11 @@
                 "result*/"
                 "target/*"
               ];
+              formatter = {
+                mdformat.includes = [
+                  "README.tpl"
+                ];
+              };
             };
           }).config.build.wrapper;
       }
