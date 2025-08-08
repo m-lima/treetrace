@@ -29,7 +29,6 @@ jobs:
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check
-        shell: bash
         run: nix flake check
   publish:
     name: Publish
