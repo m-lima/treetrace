@@ -13,8 +13,9 @@ use crate::output::Output;
 /// Fields of spans and events are printed inline, so that each line is a log entry. However,
 /// calling [`Builder::multiline`] prints each field in a separate line.
 ///
-/// By default, the timestamp is printed for each entry. However, it might be useful to omit it if,
-/// e.g., using `jornald`. That can be achieved by calling [`Builder::omit_timestamp`].
+/// If the feature `timestamp` is enabled, by default the timestamp is printed for each entry.
+/// However, it might be useful to omit it if, e.g., using `jornald`.
+/// That can be achieved by calling [`Builder::omit_timestamp`].
 ///
 /// # Examples
 ///
@@ -29,6 +30,7 @@ pub struct Layer<O: Output> {
     output: O,
     log_spans: bool,
     multiline: bool,
+    #[cfg(feature = "timestamp")]
     timestamp: bool,
     last_span: std::sync::atomic::AtomicU64,
 }
@@ -87,6 +89,7 @@ impl<O: Output, const LOG_SPANS: bool, const TIMESTAMP: bool>
     }
 }
 
+#[cfg(feature = "timestamp")]
 impl<O: Output, const LOG_SPANS: bool, const MULTILINE: bool>
     Builder<O, LOG_SPANS, MULTILINE, true>
 {
@@ -107,6 +110,7 @@ impl<O: Output, const LOG_SPANS: bool, const MULTILINE: bool, const TIMESTAMP: b
             output: self.0,
             log_spans: LOG_SPANS,
             multiline: MULTILINE,
+            #[cfg(feature = "timestamp")]
             timestamp: TIMESTAMP,
             last_span: std::sync::atomic::AtomicU64::new(0),
         }
@@ -115,13 +119,17 @@ impl<O: Output, const LOG_SPANS: bool, const MULTILINE: bool, const TIMESTAMP: b
 
 struct SpanInfo {
     id: u16,
+    #[cfg(feature = "timestamp")]
     date_time: Option<chrono::DateTime<chrono::Utc>>,
     records: Vec<(&'static str, String)>,
     new: std::sync::atomic::AtomicBool,
 }
 
 impl SpanInfo {
-    fn new(attrs: &tracing::span::Attributes<'_>, timestamp: bool) -> Self {
+    fn new(
+        attrs: &tracing::span::Attributes<'_>,
+        #[cfg(feature = "timestamp")] timestamp: bool,
+    ) -> Self {
         use rand::SeedableRng;
 
         struct Visistor(Vec<(&'static str, String)>);
@@ -137,6 +145,7 @@ impl SpanInfo {
 
         Self {
             id: rand::Rng::random(&mut rand::rngs::SmallRng::from_os_rng()),
+            #[cfg(feature = "timestamp")]
             date_time: timestamp.then_some(chrono::Utc::now()),
             records: visitor.0,
             new: std::sync::atomic::AtomicBool::new(true),
@@ -153,8 +162,11 @@ impl<O: Output> tracing_subscriber::Layer<tracing_subscriber::Registry> for Laye
     ) {
         if let Some(span) = ctx.span(id) {
             if span.extensions().get::<SpanInfo>().is_none() {
-                span.extensions_mut()
-                    .insert(SpanInfo::new(attrs, self.timestamp));
+                span.extensions_mut().insert(SpanInfo::new(
+                    attrs,
+                    #[cfg(feature = "timestamp")]
+                    self.timestamp,
+                ));
             }
 
             if self.log_spans {
@@ -201,7 +213,14 @@ impl<O: Output> tracing_subscriber::Layer<tracing_subscriber::Registry> for Laye
             std::sync::atomic::Ordering::Relaxed,
         );
 
-        print_event(&mut stdout, event, depth, self.multiline, self.timestamp);
+        print_event(
+            &mut stdout,
+            event,
+            depth,
+            self.multiline,
+            #[cfg(feature = "timestamp")]
+            self.timestamp,
+        );
     }
 
     fn on_close(
@@ -252,6 +271,7 @@ fn print_span(
                     "::"
                 };
 
+                #[cfg(feature = "timestamp")]
                 if let Some(date_time) = info.date_time {
                     drop(write!(
                         out,
@@ -315,7 +335,7 @@ fn print_event(
     event: &tracing::Event<'_>,
     depth: usize,
     multiline: bool,
-    timestamp: bool,
+    #[cfg(feature = "timestamp")] timestamp: bool,
 ) {
     struct Messenger<'w, W>(&'w mut W);
     impl<W: std::io::Write> tracing_subscriber::field::Visit for Messenger<'_, W> {
@@ -344,6 +364,7 @@ fn print_event(
         }
     }
 
+    #[cfg(feature = "timestamp")]
     if timestamp {
         drop(write!(
             out,
@@ -380,3 +401,35 @@ fn print_event(
     event.record(&mut Fielder(out, multiline.then_some(depth)));
     drop(writeln!(out, "[m"));
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
+//
+//     #[derive(Default)]
+//     struct TestOutput(std::sync::Mutex<Vec<u8>>);
+//
+//     impl crate::Output for TestOutput {
+//         fn lock(&self) -> impl std::io::Write {
+//             struct TestWrite<'a>(std::sync::MutexGuard<'a, Vec<u8>>);
+//
+//             impl std::io::Write for TestWrite<'_> {
+//                 fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+//                     self.0.write(buf)
+//                 }
+//
+//                 fn flush(&mut self) -> std::io::Result<()> {
+//                     self.0.flush()
+//                 }
+//             }
+//
+//             TestWrite(self.0.lock().unwrap())
+//         }
+//     }
+//
+//     #[test]
+//     fn default_layer() {
+//         let layer = Layer::builder(TestOutput::default()).build();
+//         let response = tracing::subscriber::with_default(&subscriber, || get_response(req));
+//     }
+// }

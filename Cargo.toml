@@ -10,8 +10,14 @@ categories = ["development-tools::debugging", "asynchronous"]
 description = "A tracing layer that nests events in spans"
 license = "MIT"
 
+[features]
+default = ["timestamp"]
+timestamp = ["dep:chrono"]
+
 [dependencies]
-chrono = { version = "0.4.40", default-features = false, features = ["now"] }
+chrono = { version = "0.4.40", default-features = false, features = [
+  "now",
+], optional = true }
 rand = { version = "0.9.0", default-features = false, features = [
   "os_rng",
   "small_rng",
