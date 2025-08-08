@@ -11,7 +11,7 @@ hierarchy.
 ## Examples
 
 ```rust
-let layer = Layer::new(Stdout, false, false);
+let layer = Layer::builder(Stdout).build();
 let subscriber = tracing_subscriber::registry().with(layer);
 tracing::subscriber::set_global_default(subscriber).unwrap();
 ```

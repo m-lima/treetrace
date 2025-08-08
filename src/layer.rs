@@ -8,18 +8,20 @@ use crate::output::Output;
 /// hierarchy will be printed.
 ///
 /// Spans are normally not printed unless an event occurs within them. This behavior can be
-/// changed so that they are always printed when entered by setting
-/// `log_spans` in [`Layer::new`].
+/// changed so that they are always printed when entered by calling [`Builder::log_spans`].
 ///
 /// Fields of spans and events are printed inline, so that each line is a log entry. However,
-/// setting `multiline` in [`Layer::new`] prints each field in a separate line.
+/// calling [`Builder::multiline`] prints each field in a separate line.
+///
+/// By default, the timestamp is printed for each entry. However, it might be useful to omit it if,
+/// e.g., using `jornald`. That can be achieved by calling [`Builder::omit_timestamp`].
 ///
 /// # Examples
 ///
 /// ```
 /// # use treetrace::{layer::Layer, output::Stdout};
 /// # use tracing_subscriber::layer::SubscriberExt;
-/// let layer = Layer::new(Stdout, false, false);
+/// let layer = Layer::builder(Stdout).build();
 /// let subscriber = tracing_subscriber::registry().with(layer);
 /// tracing::subscriber::set_global_default(subscriber).unwrap();
 /// ```
@@ -27,26 +29,85 @@ pub struct Layer<O: Output> {
     output: O,
     log_spans: bool,
     multiline: bool,
+    timestamp: bool,
     last_span: std::sync::atomic::AtomicU64,
 }
 
 impl<O: Output> Layer<O> {
-    /// Creates a new [`Layer`] using `output` as the [`Output`].
+    /// Creates a new [`Builder`] using `output` as the [`Output`].
     ///
     /// # Examples
     ///
     /// ```
     /// # use treetrace::{layer::Layer, output::Stdout};
     /// # use tracing_subscriber::layer::SubscriberExt;
-    /// let layer = Layer::new(Stdout, false, false);
+    /// let layer = Layer::builder(Stdout).build();
     /// let subscriber = tracing_subscriber::registry().with(layer);
     /// tracing::subscriber::set_global_default(subscriber).unwrap();
     /// ```
-    pub fn new(output: O, log_spans: bool, multiline: bool) -> Self {
-        Self {
-            output,
-            log_spans,
-            multiline,
+    pub fn builder(output: O) -> Builder<O, false, false, true> {
+        Builder(output)
+    }
+}
+
+/// The builder for a [`Layer`].
+///
+/// # Examples
+///
+/// ```
+/// # use treetrace::{layer::Layer, output::Stdout};
+/// # use tracing_subscriber::layer::SubscriberExt;
+/// let layer = Layer::builder(Stdout).log_spans().build();
+/// let subscriber = tracing_subscriber::registry().with(layer);
+/// tracing::subscriber::set_global_default(subscriber).unwrap();
+/// ```
+pub struct Builder<O: Output, const LOG_SPANS: bool, const MULTILINE: bool, const TIMESTAMP: bool>(
+    O,
+);
+
+impl<O: Output, const MULTILINE: bool, const TIMESTAMP: bool>
+    Builder<O, false, MULTILINE, TIMESTAMP>
+{
+    /// Log spans on every entry.
+    ///
+    /// If disabled, spans are only loged if an event occurs.
+    pub fn log_spans(self) -> Builder<O, true, MULTILINE, TIMESTAMP> {
+        Builder(self.0)
+    }
+}
+
+impl<O: Output, const LOG_SPANS: bool, const TIMESTAMP: bool>
+    Builder<O, LOG_SPANS, false, TIMESTAMP>
+{
+    /// Split the log fields into multiple lines.
+    ///
+    /// This option can enable log forging by a malicious source.
+    pub fn multiline(self) -> Builder<O, LOG_SPANS, true, TIMESTAMP> {
+        Builder(self.0)
+    }
+}
+
+impl<O: Output, const LOG_SPANS: bool, const MULTILINE: bool>
+    Builder<O, LOG_SPANS, MULTILINE, true>
+{
+    /// Omit the timestamp in the log.
+    ///
+    /// Useful when using with, e.g., `journald` to avoid noise.
+    pub fn omit_timestamp(self) -> Builder<O, LOG_SPANS, MULTILINE, false> {
+        Builder(self.0)
+    }
+}
+
+impl<O: Output, const LOG_SPANS: bool, const MULTILINE: bool, const TIMESTAMP: bool>
+    Builder<O, LOG_SPANS, MULTILINE, TIMESTAMP>
+{
+    /// Constructs the final [`Layer`] instance with the options provided.
+    pub fn build(self) -> Layer<O> {
+        Layer {
+            output: self.0,
+            log_spans: LOG_SPANS,
+            multiline: MULTILINE,
+            timestamp: TIMESTAMP,
             last_span: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -54,13 +115,13 @@ impl<O: Output> Layer<O> {
 
 struct SpanInfo {
     id: u16,
-    date_time: chrono::DateTime<chrono::Utc>,
+    date_time: Option<chrono::DateTime<chrono::Utc>>,
     records: Vec<(&'static str, String)>,
     new: std::sync::atomic::AtomicBool,
 }
 
 impl SpanInfo {
-    fn new(attrs: &tracing::span::Attributes<'_>) -> Self {
+    fn new(attrs: &tracing::span::Attributes<'_>, timestamp: bool) -> Self {
         use rand::SeedableRng;
 
         struct Visistor(Vec<(&'static str, String)>);
@@ -76,7 +137,7 @@ impl SpanInfo {
 
         Self {
             id: rand::Rng::random(&mut rand::rngs::SmallRng::from_os_rng()),
-            date_time: chrono::Utc::now(),
+            date_time: timestamp.then_some(chrono::Utc::now()),
             records: visitor.0,
             new: std::sync::atomic::AtomicBool::new(true),
         }
@@ -92,7 +153,8 @@ impl<O: Output> tracing_subscriber::Layer<tracing_subscriber::Registry> for Laye
     ) {
         if let Some(span) = ctx.span(id) {
             if span.extensions().get::<SpanInfo>().is_none() {
-                span.extensions_mut().insert(SpanInfo::new(attrs));
+                span.extensions_mut()
+                    .insert(SpanInfo::new(attrs, self.timestamp));
             }
 
             if self.log_spans {
@@ -139,7 +201,7 @@ impl<O: Output> tracing_subscriber::Layer<tracing_subscriber::Registry> for Laye
             std::sync::atomic::Ordering::Relaxed,
         );
 
-        print_event(&mut stdout, event, depth, self.multiline);
+        print_event(&mut stdout, event, depth, self.multiline, self.timestamp);
     }
 
     fn on_close(
@@ -190,11 +252,18 @@ fn print_span(
                     "::"
                 };
 
+                if let Some(date_time) = info.date_time {
+                    drop(write!(
+                        out,
+                        "[;2m[{timestamp}] ",
+                        timestamp = date_time.format("%Y-%m-%d %H:%M:%S"),
+                    ));
+                }
+
                 drop(write!(
                     out,
-                    "[;2m[{timestamp}][m {indent:>0$}[m{path}{div}[37m{name}",
+                    "[m{indent:>0$}[m{path}{div}[37m{name}",
                     depth * 2,
-                    timestamp = info.date_time.format("%Y-%m-%d %H:%M:%S"),
                     indent = "",
                 ));
 
@@ -246,6 +315,7 @@ fn print_event(
     event: &tracing::Event<'_>,
     depth: usize,
     multiline: bool,
+    timestamp: bool,
 ) {
     struct Messenger<'w, W>(&'w mut W);
     impl<W: std::io::Write> tracing_subscriber::field::Visit for Messenger<'_, W> {
@@ -274,11 +344,18 @@ fn print_event(
         }
     }
 
+    if timestamp {
+        drop(write!(
+            out,
+            "[;2m[{timestamp}] ",
+            timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        ));
+    }
+
     let depth = depth * 2;
     drop(write!(
         out,
-        "[;2m[{timestamp}][m {indent:>depth$}{level}[m",
-        timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S"),
+        "[m{indent:>depth$}{level}[m",
         indent = "",
         level = match *event.metadata().level() {
             tracing::Level::TRACE => {
